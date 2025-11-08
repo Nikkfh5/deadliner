@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter
+from fastapi import FastAPI, APIRouter, HTTPException
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -6,9 +6,10 @@ import os
 import logging
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
-from typing import List
+from typing import List, Optional, Literal
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
+from collections import defaultdict
 
 
 ROOT_DIR = Path(__file__).parent
@@ -27,44 +28,179 @@ api_router = APIRouter(prefix="/api")
 
 
 # Define Models
-class StatusCheck(BaseModel):
-    model_config = ConfigDict(extra="ignore")  # Ignore MongoDB's _id field
+class Goal(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    name: str
+    period_type: Literal["week", "month", "custom"]
+    start_date: str  # ISO format date string
+    end_date: str    # ISO format date string
+    measure_type: Literal["full_days", "hours"]
+    target_value: float
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
-class StatusCheckCreate(BaseModel):
-    client_name: str
+class GoalCreate(BaseModel):
+    name: str
+    period_type: Literal["week", "month", "custom"]
+    start_date: str
+    end_date: str
+    measure_type: Literal["full_days", "hours"]
+    target_value: float
 
-# Add your routes to the router instead of directly to app
-@api_router.get("/")
-async def root():
-    return {"message": "Hello World"}
+class GoalUpdate(BaseModel):
+    name: Optional[str] = None
+    period_type: Optional[Literal["week", "month", "custom"]] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    measure_type: Optional[Literal["full_days", "hours"]] = None
+    target_value: Optional[float] = None
 
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.model_dump()
-    status_obj = StatusCheck(**status_dict)
+class Progress(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     
-    # Convert to dict and serialize datetime to ISO string for MongoDB
-    doc = status_obj.model_dump()
-    doc['timestamp'] = doc['timestamp'].isoformat()
-    
-    _ = await db.status_checks.insert_one(doc)
-    return status_obj
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    goal_id: str
+    date: str  # ISO format date string
+    value: float  # количество дней или часов
+    note: Optional[str] = None
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    # Exclude MongoDB's _id field from the query results
-    status_checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
+class ProgressCreate(BaseModel):
+    goal_id: str
+    date: str
+    value: float
+    note: Optional[str] = None
+
+class ProgressUpdate(BaseModel):
+    goal_id: Optional[str] = None
+    date: Optional[str] = None
+    value: Optional[float] = None
+    note: Optional[str] = None
+
+class GoalSummary(BaseModel):
+    goal: Goal
+    completed: float
+    remaining: float
+    percentage: float
+    progress_entries: List[Progress]
+
+
+# Goal endpoints
+@api_router.post("/goals", response_model=Goal)
+async def create_goal(input: GoalCreate):
+    goal_obj = Goal(**input.model_dump())
+    doc = goal_obj.model_dump()
+    await db.goals.insert_one(doc)
+    return goal_obj
+
+@api_router.get("/goals", response_model=List[Goal])
+async def get_goals():
+    goals = await db.goals.find({}, {"_id": 0}).to_list(1000)
+    return goals
+
+@api_router.get("/goals/{goal_id}", response_model=Goal)
+async def get_goal(goal_id: str):
+    goal = await db.goals.find_one({"id": goal_id}, {"_id": 0})
+    if not goal:
+        raise HTTPException(status_code=404, detail="Goal not found")
+    return goal
+
+@api_router.put("/goals/{goal_id}", response_model=Goal)
+async def update_goal(goal_id: str, input: GoalUpdate):
+    goal = await db.goals.find_one({"id": goal_id}, {"_id": 0})
+    if not goal:
+        raise HTTPException(status_code=404, detail="Goal not found")
     
-    # Convert ISO string timestamps back to datetime objects
-    for check in status_checks:
-        if isinstance(check['timestamp'], str):
-            check['timestamp'] = datetime.fromisoformat(check['timestamp'])
+    update_data = {k: v for k, v in input.model_dump().items() if v is not None}
+    if update_data:
+        await db.goals.update_one({"id": goal_id}, {"$set": update_data})
     
-    return status_checks
+    updated_goal = await db.goals.find_one({"id": goal_id}, {"_id": 0})
+    return updated_goal
+
+@api_router.delete("/goals/{goal_id}")
+async def delete_goal(goal_id: str):
+    result = await db.goals.delete_one({"id": goal_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Goal not found")
+    
+    # Also delete all progress entries for this goal
+    await db.progress.delete_many({"goal_id": goal_id})
+    
+    return {"message": "Goal deleted successfully"}
+
+
+# Progress endpoints
+@api_router.post("/progress", response_model=Progress)
+async def create_progress(input: ProgressCreate):
+    # Check if goal exists
+    goal = await db.goals.find_one({"id": input.goal_id}, {"_id": 0})
+    if not goal:
+        raise HTTPException(status_code=404, detail="Goal not found")
+    
+    progress_obj = Progress(**input.model_dump())
+    doc = progress_obj.model_dump()
+    await db.progress.insert_one(doc)
+    return progress_obj
+
+@api_router.get("/progress", response_model=List[Progress])
+async def get_progress(goal_id: Optional[str] = None):
+    query = {"goal_id": goal_id} if goal_id else {}
+    progress_list = await db.progress.find(query, {"_id": 0}).to_list(1000)
+    return progress_list
+
+@api_router.get("/progress/{progress_id}", response_model=Progress)
+async def get_progress_entry(progress_id: str):
+    progress = await db.progress.find_one({"id": progress_id}, {"_id": 0})
+    if not progress:
+        raise HTTPException(status_code=404, detail="Progress entry not found")
+    return progress
+
+@api_router.put("/progress/{progress_id}", response_model=Progress)
+async def update_progress(progress_id: str, input: ProgressUpdate):
+    progress = await db.progress.find_one({"id": progress_id}, {"_id": 0})
+    if not progress:
+        raise HTTPException(status_code=404, detail="Progress entry not found")
+    
+    update_data = {k: v for k, v in input.model_dump().items() if v is not None}
+    if update_data:
+        await db.progress.update_one({"id": progress_id}, {"$set": update_data})
+    
+    updated_progress = await db.progress.find_one({"id": progress_id}, {"_id": 0})
+    return updated_progress
+
+@api_router.delete("/progress/{progress_id}")
+async def delete_progress(progress_id: str):
+    result = await db.progress.delete_one({"id": progress_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Progress entry not found")
+    return {"message": "Progress entry deleted successfully"}
+
+
+# Summary endpoint
+@api_router.get("/summary", response_model=List[GoalSummary])
+async def get_summary():
+    goals = await db.goals.find({}, {"_id": 0}).to_list(1000)
+    summaries = []
+    
+    for goal in goals:
+        progress_list = await db.progress.find({"goal_id": goal["id"]}, {"_id": 0}).to_list(1000)
+        
+        completed = sum(p["value"] for p in progress_list)
+        remaining = max(0, goal["target_value"] - completed)
+        percentage = (completed / goal["target_value"] * 100) if goal["target_value"] > 0 else 0
+        
+        summaries.append(GoalSummary(
+            goal=Goal(**goal),
+            completed=completed,
+            remaining=remaining,
+            percentage=min(100, percentage),
+            progress_entries=[Progress(**p) for p in progress_list]
+        ))
+    
+    return summaries
+
 
 # Include the router in the main app
 app.include_router(api_router)
