@@ -1,5 +1,4 @@
 import { useState, useEffect } from "react";
-import axios from "axios";
 import {
   Dialog,
   DialogContent,
@@ -20,8 +19,9 @@ import {
 } from "@/components/ui/select";
 import { toast } from "sonner";
 import { format } from "date-fns";
+import storageService from "@/services/storageService";
 
-export default function ProgressForm({ open, onClose, onSuccess, api, summaries, editingProgress }) {
+export default function ProgressForm({ open, onClose, onSuccess, summaries, editingProgress }) {
   const [formData, setFormData] = useState({
     goal_id: "",
     date: format(new Date(), "yyyy-MM-dd"),
@@ -72,9 +72,9 @@ export default function ProgressForm({ open, onClose, onSuccess, api, summaries,
       };
 
       if (editingProgress) {
-        await axios.put(`${api}/progress/${editingProgress.id}`, payload);
+        await storageService.progress.update(editingProgress.id, payload);
       } else {
-        await axios.post(`${api}/progress`, payload);
+        await storageService.progress.create(payload);
       }
 
       onSuccess();

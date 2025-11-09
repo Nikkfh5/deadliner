@@ -1,5 +1,4 @@
 import { useState, useEffect } from "react";
-import axios from "axios";
 import { Moon, Sun, Plus, Calendar as CalendarIcon } from "lucide-react";
 import { useTheme } from "next-themes";
 import { Button } from "@/components/ui/button";
@@ -10,8 +9,9 @@ import GoalsSummary from "@/components/GoalsSummary";
 import PeriodCalendar from "@/components/PeriodCalendar";
 import RemainingGoals from "@/components/RemainingGoals";
 import { toast } from "sonner";
+import storageService from "@/services/storageService";
 
-export default function Dashboard({ api }) {
+export default function Dashboard() {
   const { theme, setTheme } = useTheme();
   const [summaries, setSummaries] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -23,7 +23,7 @@ export default function Dashboard({ api }) {
   const fetchSummaries = async () => {
     try {
       setLoading(true);
-      const response = await axios.get(`${api}/summary`);
+      const response = await storageService.summary.getAll();
       setSummaries(response.data);
     } catch (error) {
       console.error("Error fetching summaries:", error);
@@ -60,7 +60,7 @@ export default function Dashboard({ api }) {
     if (!window.confirm("Удалить эту цель и весь связанный прогресс?")) return;
     
     try {
-      await axios.delete(`${api}/goals/${goalId}`);
+      await storageService.goals.delete(goalId);
       fetchSummaries();
       toast.success("Цель удалена");
     } catch (error) {
@@ -78,7 +78,7 @@ export default function Dashboard({ api }) {
     if (!window.confirm("Удалить эту отметку прогресса?")) return;
     
     try {
-      await axios.delete(`${api}/progress/${progressId}`);
+      await storageService.progress.delete(progressId);
       fetchSummaries();
       toast.success("Отметка удалена");
     } catch (error) {
@@ -213,7 +213,6 @@ export default function Dashboard({ api }) {
           setEditingGoal(null);
         }}
         onSuccess={handleGoalCreated}
-        api={api}
         editingGoal={editingGoal}
       />
 
@@ -224,7 +223,6 @@ export default function Dashboard({ api }) {
           setEditingProgress(null);
         }}
         onSuccess={handleProgressCreated}
-        api={api}
         summaries={summaries}
         editingProgress={editingProgress}
       />

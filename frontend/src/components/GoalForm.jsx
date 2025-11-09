@@ -1,5 +1,4 @@
 import { useState, useEffect } from "react";
-import axios from "axios";
 import {
   Dialog,
   DialogContent,
@@ -20,8 +19,9 @@ import {
 import { toast } from "sonner";
 import { format, startOfWeek, endOfWeek, startOfMonth, endOfMonth } from "date-fns";
 import { ru } from "date-fns/locale";
+import storageService from "@/services/storageService";
 
-export default function GoalForm({ open, onClose, onSuccess, api, editingGoal }) {
+export default function GoalForm({ open, onClose, onSuccess, editingGoal }) {
   const [formData, setFormData] = useState({
     name: "",
     period_type: "week",
@@ -77,9 +77,9 @@ export default function GoalForm({ open, onClose, onSuccess, api, editingGoal })
       };
 
       if (editingGoal) {
-        await axios.put(`${api}/goals/${editingGoal.id}`, payload);
+        await storageService.goals.update(editingGoal.id, payload);
       } else {
-        await axios.post(`${api}/goals`, payload);
+        await storageService.goals.create(payload);
       }
 
       onSuccess();
